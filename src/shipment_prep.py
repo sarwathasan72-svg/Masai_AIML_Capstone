@@ -1,6 +1,12 @@
 import pandas as pd
 import numpy as np
 
+PROMISED_HOURS = {
+    "Express": 36,
+    "Standard": 60,
+    "Economy": 96,
+}
+
 # The five bookkeeping columns supplied in the dataset.
 NOISE_COLUMNS = [
     "label_print_batch",
@@ -100,17 +106,11 @@ def build_features(clean, hubs):
         validate="many_to_one"
     )
 
-    # Convert service type into promised delivery hours.
-    promised_hours = {
-        "Express": 36,
-        "Standard": 60,
-        "Economy": 96
-    }
-
+    # Add the promised delivery hours.
     feature_df["promised_hours"] = (
-        feature_df["service_type"].map(promised_hours).astype(int)
+        feature_df["service_type"].map(PROMISED_HOURS).astype(int)
     )
-
+    
     # COD = 1; all other payment modes = 0.
     feature_df["is_cod"] = (
         feature_df["payment_mode"] == "COD"
@@ -132,3 +132,4 @@ def build_features(clean, hubs):
     )
 
     return feature_df
+
