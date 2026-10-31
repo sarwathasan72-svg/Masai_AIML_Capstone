@@ -1,6 +1,11 @@
 import pandas as pd
-from src.shipment_prep import clean_shipments, build_features
+# from src.shipment_prep import clean_shipments, build_features
 
+from src.shipment_prep import (
+    clean_shipments,
+    build_features,
+    FEATURE_COLUMNS,
+)
 
 # 1. Read the original shipment file.
 raw_ship_df = pd.read_csv("data/raw_shipments.csv")
@@ -43,6 +48,7 @@ print("Modelling table saved to data/modelling_table.csv")
 
 modelling_table_df = pd.read_csv("data/modelling_table.csv")
 print(modelling_table_df.info())
+print("\nFirst 10 rows for Modelling:")
 print(modelling_table_df.head(10))
 print(modelling_table_df.describe())
 print(modelling_table_df.shape)
@@ -96,3 +102,174 @@ delay_by_group.to_csv(
 print("\nDelay comparison:")
 print(delay_by_group.to_string(index=False))
 print("\nSaved: outputs/delay_by_group.csv")
+
+# Prepare a separate table for "before cleaning" counts.
+# The brief requires these counts AFTER removing duplicates.
+before_cleaning = raw_ship_df.drop_duplicates().copy()
+
+# Calculate delivery-hour quartiles and outlier boundaries.
+hours = modelling_df["delivery_hours"]
+
+hours_q1 = hours.quantile(0.25)
+hours_q3 = hours.quantile(0.75)
+hours_iqr = hours_q3 - hours_q1
+
+hours_lower_bound = hours_q1 - 1.5 * hours_iqr
+hours_upper_bound = hours_q3 + 1.5 * hours_iqr
+
+hours_outliers = (
+    (hours < hours_lower_bound)
+    | (hours > hours_upper_bound)
+)
+
+# Columns that must have no missing values.
+required_columns = FEATURE_COLUMNS + [
+    "delivery_hours",
+    "is_delayed",
+]
+
+# Compute every check directly from the data.
+checks = {
+    "raw_rows": len(raw_ship_df),
+
+    "duplicate_rows_removed": (
+        len(raw_ship_df) - len(before_cleaning)
+    ),
+
+    "rows_after_dedup": len(before_cleaning),
+
+    "missing_distance_km_before": (
+        before_cleaning["distance_km"].isna().sum()
+    ),
+
+    "missing_parcel_weight_before": (
+        before_cleaning["parcel_weight_kg"].isna().sum()
+    ),
+
+    "sentinel_weight_rows": (
+        before_cleaning["parcel_weight_kg"] > 100
+    ).sum(),
+
+    "missing_declared_value_before": (
+        before_cleaning["declared_value"].isna().sum()
+    ),
+
+    "missing_payment_mode_before": (
+        before_cleaning["payment_mode"].isna().sum()
+    ),
+
+    "service_type_spellings_before": (
+        before_cleaning["service_type"].nunique()
+    ),
+
+    "service_type_spellings_after": (
+        clean_ship_df["service_type"].nunique()
+    ),
+
+    "median_distance_km": medians["distance_km"],
+    "median_parcel_weight_kg": medians["parcel_weight_kg"],
+    "median_declared_value_inr": medians["declared_value_inr"],
+
+    "rows_after_hub_merge": len(modelling_df),
+
+    "nulls_in_features_and_target": (
+        modelling_df[required_columns].isna().sum().sum()
+    ),
+
+    "delayed_count": modelling_df["is_delayed"].sum(),
+    "delay_rate": modelling_df["is_delayed"].mean(),
+
+    "hours_q1": hours_q1,
+    "hours_q3": hours_q3,
+    "hours_lower_bound": hours_lower_bound,
+    "hours_upper_bound": hours_upper_bound,
+    "hours_outlier_count": hours_outliers.sum(),
+
+    "declared_value_mean_inr": (
+        modelling_df["declared_value_inr"].mean()
+    ),
+
+    "declared_value_median_inr": (
+        modelling_df["declared_value_inr"].median()
+    ),
+
+    "log_declared_value_mean": (
+        modelling_df["log_declared_value"].mean()
+    ),
+
+    "log_declared_value_median": (
+        modelling_df["log_declared_value"].median()
+    ),
+}
+
+# Convert the dictionary into the required two-column table.
+checks_df = pd.DataFrame(
+    checks.items(),
+    columns=["metric", "value"]
+)
+
+Path("outputs").mkdir(exist_ok=True)
+
+checks_df.to_csv(
+    "outputs/part_a_checks.csv",
+    index=False,
+    float_format="%.4f"
+)
+
+print("\nPart A checks:")
+print(checks_df.to_string(index=False))
+print("\nSaved: outputs/part_a_checks.csv")
+
+# Calculate correlations between numeric columns.
+correlations_df = modelling_df.select_dtypes(
+    include="number"
+).corr()
+
+# Keep row labels so each correlation can be identified.
+correlations_df.to_csv(
+    "outputs/part_a_correlations.csv",
+    index=True,
+    float_format="%.4f"
+)
+
+# Show the three strongest correlations with delivery hours,
+# ranked by absolute strength while preserving their signs.
+hours_correlations = correlations_df["delivery_hours"].drop(
+    "delivery_hours"
+)
+
+top_three = hours_correlations.loc[
+    hours_correlations.abs().sort_values(
+        ascending=False
+    ).head(3).index
+]
+
+print("\nTop three correlations with delivery_hours:")
+print(top_three.round(4))
+print("\nSaved: outputs/part_a_correlations.csv")
+
+# Check preparation of new shipments using historical medians.
+new_ship_df = pd.read_csv("data/new_shipments.csv")
+
+new_clean_df, _ = clean_shipments(
+    new_ship_df,
+    medians=medians
+)
+
+new_features_df = build_features(new_clean_df, hubs_df)
+
+missing_features = (
+    new_features_df[FEATURE_COLUMNS].isna().sum().sum()
+)
+
+print("\nNew shipment preparation check:")
+print("Input rows:", len(new_ship_df))
+print("Prepared rows:", len(new_features_df))
+print("Missing feature values:", missing_features)
+
+assert len(new_features_df) == len(new_ship_df), (
+    "The shipment count changed during preparation."
+)
+assert missing_features == 0, (
+    "Some model features still contain missing values."
+)
