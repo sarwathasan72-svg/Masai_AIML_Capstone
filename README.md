@@ -12,23 +12,29 @@ This project uses synthetic shipment data to answer three operational questions:
 
 No real Delhivery shipment records are used.
 
-### Current progress
+### Implementation status
 
 - Part A: Data cleaning, feature preparation and exploratory analysis completed.
 - Part B: Delivery-hours regression and evaluation completed.
 - Part C: Delay classification, feature selection, tuning, threshold selection and final test evaluation completed.
-- Part D: Hub segmentation, model packaging and batch scoring pending.
+- Part D: Hub segmentation, model packaging, reload verification and new-shipment scoring completed.
+- Repeatability: Two consecutive scoring runs produced byte-identical output.
+- Final submission checks: Clean-clone execution, repository contents and GitHub synchronization still need final verification.
 
 ## How to run
 
-Run commands from the repository's main folder.
+Run commands from the repository root.
 
-### Environment setup
+### Clone and set up the environment
 
-Create and activate a virtual environment on macOS/Linux:
+The following commands are for macOS/Linux:
 
 ```bash
-python -m venv .venv
+git clone https://github.com/sarwathasan72-svg/Masai_AIML_Capstone.git
+cd Masai_AIML_Capstone
+git switch main
+
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
@@ -44,38 +50,53 @@ joblib==1.6.0
 
 ### Execution order
 
-The three generated input CSVs are committed in `data/`. To reproduce them using the provided, unchanged generator:
+The three generated input CSVs are included under `data/`. To regenerate them using the provided generator:
 
 ```bash
 python generate_data.py
 ```
 
-Run the completed analysis scripts in this order:
+Run the pipeline in this order:
 
 ```bash
 python part_a_clean_eda.py
 python part_b_regression.py
 python part_c_classification.py
+python part_d_segments.py
+python package_model.py
+python predict_delay.py
 ```
 
-Commands for Part D will be added when its scripts are completed.
+`package_model.py` regenerates `models/delay_model.pkl` using the configuration selected in Part C.
+
+The committed pickle loads reliably only with the scikit-learn version pinned in `requirements.txt`. When installed versions differ, the grader re-runs `package_model.py` instead of loading the committed pickle.
+
+The final batch action list is written to:
+
+```text
+outputs/new_shipment_actions.csv
+```
 
 ### Main files
 
 | File | Purpose |
 |---|---|
 | `generate_data.py` | Provided synthetic-data generator |
-| `data/hubs.csv` | Information about the 24 hubs |
+| `data/hubs.csv` | Reference information about 24 hubs |
 | `data/raw_shipments.csv` | Historical shipments before cleaning |
-| `data/new_shipments.csv` | 48 new shipments for later batch scoring |
+| `data/new_shipments.csv` | 48 new shipments to score |
 | `src/shipment_prep.py` | Shared constants, cleaning and feature preparation |
-| `part_a_clean_eda.py` | Creates the modelling table and Part A outputs |
+| `part_a_clean_eda.py` | Creates the modelling table and Part A analysis outputs |
 | `data/clean_shipments.csv` | Intermediate cleaned historical data |
-| `data/modelling_table.csv` | Prepared historical data used for modelling |
+| `data/modelling_table.csv` | Prepared historical data used by Parts B, C and D |
 | `part_b_regression.py` | Compares delivery-hours regression models |
-| `part_c_classification.py` | Compares delay classifiers, selects features, tunes the forest and selects an alert threshold |
+| `part_c_classification.py` | Compares classifiers, selects features, tunes the forest and selects an alert threshold |
+| `part_d_segments.py` | Creates hub profiles, segments and tier-mismatch reports |
+| `package_model.py` | Rebuilds and saves the selected classifier and verifies reload consistency |
+| `predict_delay.py` | Scores new parcels and assigns operational actions |
 | `inspect_data.py` | Optional helper for inspecting data |
 | `requirements.txt` | Exact library versions |
+| `models/` | Saved classifier, threshold, feature order and imputation medians |
 | `outputs/` | Calculated results saved as CSV files |
 
 ## Data findings
@@ -93,9 +114,9 @@ Before filling missing values, the deduplicated data contained:
 
 Five additional parcel weights above 100 kg were treated as missing according to the project instructions.
 
-Cleaning standardized service names from 12 spellings to three categories, filled missing payment modes with `Unknown`, converted declared values to numeric INR amounts, and parsed dispatch timestamps.
+Cleaning standardized service names from 12 spellings to three categories, filled missing payment modes with `Unknown`, converted declared values to numeric INR amounts and parsed dispatch timestamps.
 
-Missing numeric values were filled with the historical medians:
+Missing numeric values were filled with historical medians:
 
 | Column | Median |
 |---|---:|
@@ -107,9 +128,11 @@ Feature preparation joined hub information and created `promised_hours`, `is_cod
 
 The modelling table retained all 1,200 shipments and had no missing values in the required features and targets. There were 278 delayed shipments, representing 23.17% of the total.
 
-A shipment was labelled delayed when its actual delivery hours exceeded its promised hours.
+A shipment was labelled delayed when actual delivery hours exceeded promised hours.
 
 The same preparation functions were checked on new shipments using the historical medians. All 48 rows were preserved, with no missing model-feature values.
+
+Historical checks are recorded in `outputs/part_a_checks.csv`.
 
 ### Service type
 
@@ -139,14 +162,18 @@ Hub tier is associated with delay risk in this dataset. This does not establish 
 
 Delay rates increased across the distance bands:
 
-| Distance band | Shipments | Delayed | Delay rate |
+| Distance-band label | Shipments | Delayed | Delay rate |
 |---|---:|---:|---:|
-| 0–200 km | 274 | 6 | 2.19% |
-| Above 200–400 km | 563 | 77 | 13.68% |
-| Above 400–600 km | 275 | 120 | 43.64% |
-| Above 600 km | 88 | 75 | 85.23% |
+| 0-200 | 274 | 6 | 2.19% |
+| 201-400 | 563 | 77 | 13.68% |
+| 401-600 | 275 | 120 | 43.64% |
+| 601+ | 88 | 75 | 85.23% |
+
+The bin edges are 0, 200, 400, 600 and 2000, with right edges included. The labels follow the assignment; for example, `201-400` represents distances greater than 200 and up to 400 km.
 
 Longer journeys were associated with a greater likelihood of missing the delivery promise.
+
+Service, tier and distance results are recorded in `outputs/part_a_delay_by_group.csv`.
 
 ### Correlations
 
@@ -160,11 +187,13 @@ The three strongest absolute correlations with `delivery_hours`, excluding the t
 
 Longer service promises, longer distances and more stops were associated with longer delivery times. Correlation does not prove causation.
 
+Source: `outputs/part_a_correlations.csv`.
+
 ### Declared value and log transformation
 
 After filling missing values, mean declared value was INR 1,533.05 and the median was INR 1,121.50. The higher mean suggests a right-skewed distribution.
 
-After applying the natural logarithm, the mean was 7.0277 and the median was 7.0224. These values were much closer. The transformation compresses large values and helps reduce skew. Log-transformed values are not amounts in INR.
+After applying the natural logarithm, the mean was 7.0277 and the median was 7.0224. The transformation compresses large values and helps reduce skew. Log-transformed values are not amounts in INR.
 
 ### Delivery-time outliers
 
@@ -187,17 +216,19 @@ The target was `delivery_hours`. All models used the same 17 input features in t
 
 Neither `delivery_hours` nor `is_delayed` was included in the model inputs.
 
-The data was split using two calls to `train_test_split`, both with `random_state=42`:
+The data was split using two calls to `train_test_split`, both with `random_state=42`: first a 70%/30% split, then an equal split of the temporary 30%.
 
 | Dataset | Rows | Purpose |
 |---|---:|---|
-| Training | 840 | Fit the models |
+| Training | 840 | Fit models |
 | Validation | 180 | Compare models and choose settings |
 | Test | 180 | Evaluate the selected model |
 
 Linear Regression used a pipeline containing `StandardScaler` followed by the regression model. The scaler was fitted only on training rows.
 
 The largest absolute mean among scaled training columns was approximately `4.017950e-16`, effectively zero. For scaled test columns, it was approximately `0.2186886`. Test means need not be zero because the training scaler was reused without refitting.
+
+Source: `outputs/part_b_checks.csv`.
 
 ### Baseline
 
@@ -219,7 +250,9 @@ Linear Regression was selected because it had the lowest validation RMSE: 4.8912
 
 Gradient Boosting had slightly lower MAE, but the required selection criterion was RMSE.
 
-Random Forest used 100 trees and `random_state=42`. The Gradient Boosting candidate used 100 trees, `learning_rate=0.1` and `random_state=42`.
+Random Forest used 100 trees and `random_state=42`. Gradient Boosting used 100 trees, `learning_rate=0.1` and `random_state=42`.
+
+Source: `outputs/part_b_metrics.csv`.
 
 ### Decision Tree depth and overfitting
 
@@ -240,7 +273,9 @@ Depths 1–2 showed high bias: both training and validation errors were relative
 
 Depth 6 achieved the lowest validation RMSE and was selected for the Decision Tree candidate.
 
-Depths 8, 12 and unlimited showed increasing overfitting. Training error decreased while validation error increased. The unlimited tree achieved zero training error but had validation RMSE of 7.8368 hours.
+Depths 8, 12 and unlimited showed increasing overfitting. Training error decreased while validation error increased. The unlimited tree achieved zero training error but validation RMSE of 7.8368 hours.
+
+Source: `outputs/part_b_tree_depth.csv`.
 
 ### Gradient Boosting learning-rate experiment
 
@@ -256,6 +291,8 @@ Learning rate 0.1 performed best.
 
 At 0.01, updates were too small to learn sufficiently within 100 trees. At 1.0, updates were aggressive and validation performance worsened, consistent with overshooting or fitting noise.
 
+Source: `outputs/part_b_gb_learning_rate.csv`.
+
 ### Cross-validation and final selection
 
 The two candidates with the lowest validation RMSE were evaluated on the combined 1,020 training-plus-validation rows.
@@ -269,11 +306,13 @@ Both used the same `KFold(n_splits=5, shuffle=True, random_state=42)` splits. Th
 
 Cross-validation favored Gradient Boosting, while the original validation split favored Linear Regression. Both had consistent scores across folds.
 
-For this submission, I would ship Linear Regression because it won under the prescribed validation-RMSE rule and provides a simpler model. However, Gradient Boosting's stronger cross-validation result makes it a credible alternative. I would compare both on additional representative data before a real operational deployment.
+For this submission, I would ship Linear Regression because it won under the prescribed validation-RMSE rule and provides a simpler model. Gradient Boosting's stronger cross-validation result makes it a credible alternative to assess on additional representative data before real deployment.
+
+Source: `outputs/part_b_cv.csv`.
 
 ### Final test evaluation
 
-The selected Linear Regression model was evaluated on the 180 test shipments using its original fit on the 840 training rows. It was not refitted on the combined training and validation data for this evaluation.
+The selected Linear Regression model was evaluated on the 180 test shipments using its original fit on the 840 training rows. It was not refitted on combined training and validation data for this evaluation.
 
 | Metric | Test result |
 |---|---:|
@@ -283,6 +322,8 @@ The selected Linear Regression model was evaluated on the 180 test shipments usi
 | R² | 0.9493 |
 
 The average absolute prediction error was approximately 3.57 hours. Test results were not used to change the model or its settings.
+
+Source: the test row in `outputs/part_b_metrics.csv`.
 
 ### Part B outputs
 
@@ -314,7 +355,7 @@ The blind baseline predicted every parcel as on time. It achieved 76.67% accurac
 
 This shows why accuracy alone is insufficient for identifying delays.
 
-The initial trained models used all 17 features and their default class prediction rules.
+Initial trained models used all 17 features and their default class prediction rules.
 
 | Model | TN | FP | FN | TP | Accuracy | Precision | Recall | F1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -325,7 +366,9 @@ The initial trained models used all 17 features and their default class predicti
 
 Logistic Regression used a StandardScaler pipeline. Decision Tree depth 6 achieved the highest validation F1 among depths 2, 3, 4, 5, 6, 8 and 10.
 
-Logistic Regression detected more delayed parcels than the initial forest, while the forest produced fewer false alerts. Subsequent feature-selection and tuning experiments followed the project's required Random Forest workflow.
+Logistic Regression detected more delayed parcels than the initial forest, while the forest produced fewer false alerts. Subsequent experiments followed the required Random Forest feature-selection and tuning workflow.
+
+Source: `outputs/part_c_models.csv`.
 
 ### Feature scores and noise columns
 
@@ -347,6 +390,8 @@ The noise columns together received 22.52% of the forest's impurity-based import
 
 Feature-selection F-scores measure individual feature association with the target; they are different from the F1 metric used to evaluate classifier predictions.
 
+Source: `outputs/part_c_feature_scores.csv`.
+
 ### Number of selected features
 
 SelectKBest with `f_classif` was fitted on training data inside a pipeline with a 100-tree Random Forest.
@@ -361,17 +406,19 @@ SelectKBest with `f_classif` was fitted on training data inside a pipeline with 
 
 Seven features produced the highest validation F1. Five features omitted useful information, while adding features beyond seven did not improve this validation result.
 
-All subsequent experiments used `k=7`, as required by the project.
+All subsequent experiments used `k=7`, as required.
+
+Source: `outputs/part_c_selectk.csv`.
 
 ### Random Forest tuning
 
-The searches tested these parameter choices:
+The searches tested:
 
 - `n_estimators`: 50, 100, 150
 - `max_depth`: 4, 6, 8
 - `min_samples_leaf`: 1, 5, 10
 
-Following the prescribed procedure, the seven-feature selector was fitted on all 840 training rows before the searches, and the transformed training data was passed to cross-validation.
+Following the prescribed procedure, the seven-feature selector was fitted on all 840 training rows before the searches.
 
 Both searches used five-fold cross-validation with default accuracy scoring. Randomized Search used `n_iter=9` and `random_state=42`.
 
@@ -381,26 +428,35 @@ Both searches used five-fold cross-validation with default accuracy scoring. Ran
 | Randomized Search | 9 | 5 | 45 | 0.8905 | 0.7901 |
 | Default forest, same seven features | 1 | 0 | 1 | Not calculated | 0.8333 |
 
-Search fit counts follow the project convention and exclude the additional refit of the selected configuration. The default forest required one direct training fit.
+Search fit counts exclude the additional best-configuration refit. The default forest required one direct training fit.
 
 Grid Search selected 100 trees, depth 6 and minimum leaf size 1. Randomized Search selected 50 trees, depth 6 and minimum leaf size 1.
 
-Neither tuned candidate beat the default seven-feature forest on validation F1. Tuning optimized CV accuracy, whereas final selection used validation F1. The validation set contained only 180 shipments, so small differences should not be treated as a universal ranking.
+Neither tuned candidate beat the default seven-feature forest on validation F1. The searches optimized CV accuracy, whereas final selection used validation F1. Their restricted search space also did not include unlimited tree depth.
 
 The selected configuration was:
 
-- `SelectKBest(f_classif, k=7)`
-- `RandomForestClassifier(n_estimators=100, max_depth=None, min_samples_leaf=1, random_state=42)`
+```python
+Pipeline([
+    ("selector", SelectKBest(f_classif, k=7)),
+    ("model", RandomForestClassifier(
+        n_estimators=100,
+        max_depth=None,
+        min_samples_leaf=1,
+        random_state=42,
+    )),
+])
+```
 
-The complete final pipeline was fitted on the original 840 training rows.
+The final pipeline was fitted on the original 840 training rows.
+
+Sources: `outputs/part_c_tuning.csv` and `outputs/part_c_final_config.csv`.
 
 ### Alert-threshold selection
 
-A parcel is flagged as delayed when its predicted delay probability is greater than or equal to the threshold.
+A parcel is flagged when its predicted delay probability is greater than or equal to the threshold.
 
-Missing a delayed parcel is more costly than an unnecessary call. The required rule therefore selects the highest threshold with validation recall of at least 0.80.
-
-Thresholds from 0.1 through 0.9 were evaluated.
+Because a missed delayed parcel costs more than an unnecessary call, the required rule selects the highest tested threshold with validation recall of at least 0.80.
 
 | Threshold | False alerts (FP) | Missed delays (FN) | Precision | Recall |
 |---|---:|---:|---:|---:|
@@ -414,11 +470,13 @@ Thresholds from 0.1 through 0.9 were evaluated.
 | 0.8 | 4 | 23 | 0.8261 | 0.4524 |
 | 0.9 | 2 | 30 | 0.8571 | 0.2857 |
 
-The selected threshold was 0.5. It achieved 83.33% validation recall and 79.55% precision. At 0.6, recall fell below the required 80%.
+The selected threshold was 0.5, with 83.33% validation recall and 79.55% precision. At 0.6, recall fell below 80%.
 
 Lower thresholds caught more delays but generated more false alerts.
 
 At threshold 0.5, validation F1 was 0.8140. This differs from the earlier seven-feature default-prediction F1 of 0.8333 because the explicit `>= 0.5` rule flags probability ties as delayed, while the forest's default `predict()` resolves those ties to class 0.
+
+Source: `outputs/part_c_thresholds.csv`.
 
 ### Final test results
 
@@ -428,13 +486,13 @@ The selected pipeline and threshold were evaluated on the held-out test set with
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | 0.5 | 125 | 14 | 10 | 31 | 0.8667 | 0.6889 | 0.7561 | 0.7209 |
 
-The model detected 31 of the 41 delayed test parcels, missed 10 and generated 14 false alerts.
+The model detected 31 of 41 delayed test parcels, missed 10 and generated 14 false alerts.
 
 Recall decreased from 83.33% on validation to 75.61% on test. Precision decreased from 79.55% to 68.89%.
 
-The 80% recall rule applied to validation-based threshold selection; it does not guarantee 80% recall on unseen data. With only 41 delayed test parcels, each additional missed parcel changes test recall by approximately 2.44 percentage points.
+The 80% recall rule applied to validation-based threshold selection; it does not guarantee 80% recall on unseen data. With only 41 delayed test parcels, each additional missed parcel changes recall by approximately 2.44 percentage points.
 
-The test results were reported without changing the selected configuration or threshold.
+Source: `outputs/part_c_final_test.csv`.
 
 ### Part C outputs
 
@@ -446,31 +504,244 @@ The test results were reported without changing the selected configuration or th
 - `outputs/part_c_final_test.csv`
 - `outputs/part_c_final_config.csv`
 
-## Operations playbook
+## Hub segmentation and model packaging
 
-Pending Part D.
+### Hub profiles and clustering
 
-This section will describe hub segments and how predicted delay risk combines with hub playbooks to produce an action list.
+I summarized the historical shipments into 24 hub profiles, with 50 shipments per hub.
 
-## Production and reproducibility
+Clustering used four hub-level measurements:
 
-The completed scripts read repository files and calculate their results in code. Original generated input files are preserved; cleaning operates on copies.
+- Mean delivery hours.
+- Delay rate.
+- Mean distance.
+- Mean number of stops.
 
-Shared preparation functions provide consistent transformations for historical and new shipments. New shipments use the historical imputation medians.
+The profiles were sorted by ascending `hub_id`, scaled using StandardScaler and clustered with:
 
-Library versions are pinned in `requirements.txt`. Fixed random states make splits and model experiments repeatable.
+```python
+KMeans(n_clusters=3, random_state=42, n_init=10)
+```
 
-Part C saves the selected classifier configuration and alert threshold in `outputs/part_c_final_config.csv` for use during model packaging.
+The existing hub tier was not a clustering input. This allowed observed behaviour to be compared with the tier labels afterwards.
 
-Model packaging, saved preprocessing information, reload verification and reproducible batch scoring are pending Part D.
+Clusters were named by increasing average hub delay rate, rather than their arbitrary cluster numbers.
+
+| Segment | Hubs | Mean delivery hours | Delay rate | Mean distance (km) | Mean stops |
+|---|---:|---:|---:|---:|---:|
+| Standard | 7 | 47.2396 | 0.0257 | 188.9296 | 55.3686 |
+| Watch | 8 | 56.8137 | 0.1550 | 314.1762 | 70.7175 |
+| Escalate | 9 | 64.6504 | 0.4600 | 470.4757 | 84.3444 |
+
+Sources: `outputs/hub_profile.csv` and `outputs/segment_profile.csv`.
+
+### Cluster separation
+
+The separation ratio is the mean Euclidean distance between hubs in different clusters divided by the mean distance between hubs in the same cluster.
+
+Distances were measured on the scaled profiles using all 276 unordered hub pairs.
+
+| K | Across-to-within distance ratio | Cluster sizes |
+|---|---:|---|
+| 2 | 2.8940 | 15-9 |
+| 3 | 5.3928 | 9-8-7 |
+| 4 | 6.3047 | 8-7-5-4 |
+| 5 | 6.8866 | 8-7-4-3-2 |
+
+Source: `outputs/part_d_separation.csv`.
+
+### Model packaging and reload verification
+
+`package_model.py` reads the saved Part C configuration, recreates the same stratified split and fits the selected pipeline on the 840 training rows.
+
+It writes:
+
+| Artifact | Contents |
+|---|---|
+| `models/delay_model.pkl` | Fitted SelectKBest and Random Forest pipeline |
+| `models/delay_threshold.csv` | Selected threshold |
+| `models/feature_order.csv` | All 17 input names in their required order |
+| `models/impute_values.csv` | Three historical cleaning medians |
+
+The pipeline accepts all 17 inputs and performs seven-feature selection internally.
+
+After reloading the saved pipeline, probabilities were compared against the in-memory pipeline on 180 test rows.
+
+| Check | Result |
+|---|---:|
+| Test rows scored | 180 |
+| Maximum absolute probability difference | 0.0 |
+| Threshold | 0.5 |
+
+This verifies save/load consistency, not additional model accuracy.
+
+Source: `outputs/part_d_reload_check.csv`.
+
+### Batch-scoring repeatability
+
+`predict_delay.py` reuses the shared cleaning and feature-building functions, stored medians, saved feature order, classifier and threshold.
+
+The output preserves input-file order. Flags are calculated using unrounded probabilities; reported probabilities are rounded to four decimals.
+
+Two consecutive runs produced byte-identical `outputs/new_shipment_actions.csv` files.
+
+The observed SHA-256 checksum was:
+
+```text
+a67611c016f731b930962d383a8ab77bc954ed01746646c01ab2833e042a349b
+```
+
+This confirms repeatability for the tested inputs and environment.
+
+### Part D outputs
+
+- `outputs/hub_profile.csv`
+- `outputs/part_d_separation.csv`
+- `outputs/hub_segments.csv`
+- `outputs/segment_profile.csv`
+- `outputs/tier_vs_segment_mismatch.csv`
+- `outputs/part_d_reload_check.csv`
+- `outputs/new_shipment_actions.csv`
+- `models/delay_model.pkl`
+- `models/delay_threshold.csv`
+- `models/feature_order.csv`
+- `models/impute_values.csv`
+
+## Operations recommendation
+
+### Three operating playbooks
+
+- **Standard:** Continue routine monitoring and investigate unusual changes.
+- **Watch:** Review route workload, distance and service mix regularly.
+- **Escalate:** Prioritize hub-manager review of flagged parcels and investigate recurring capacity or route constraints.
+
+These are proposed responses based on synthetic historical data, not proven interventions or measured cost savings.
+
+I retained K=3 because operations requires three playbooks. Although the separation ratio increases for K=4 and K=5, both create clusters with fewer than six hubs, too small to support their own playbook under the project rule.
+
+Source: `outputs/part_d_separation.csv`.
+
+### Escalate hubs
+
+| Hub | Historical delay rate |
+|---|---:|
+| HUB13 | 46% |
+| HUB15 | 36% |
+| HUB17 | 46% |
+| HUB18 | 38% |
+| HUB19 | 62% |
+| HUB20 | 48% |
+| HUB21 | 40% |
+| HUB23 | 44% |
+| HUB24 | 54% |
+
+Sources: `outputs/hub_profile.csv` and `outputs/hub_segments.csv`.
+
+### Existing tiers versus observed behaviour
+
+| Hub | City | Existing tier | Observed segment | Recommendation |
+|---|---|---:|---|---|
+| HUB07 | Kolkata | 1 | Watch | Apply Watch monitoring despite its Tier 1 label. |
+| HUB13 | Nagpur | 2 | Escalate | Prioritize flagged parcels for hub-manager review. |
+| HUB15 | Kochi | 2 | Escalate | Prioritize flagged parcels for hub-manager review. |
+| HUB22 | Dehradun | 3 | Watch | Use observed Watch behaviour alongside its Tier 3 label. |
+
+Source: `outputs/tier_vs_segment_mismatch.csv`.
+
+These findings do not overwrite the tier labels. They show why tier alone should not determine the operating response.
+
+### Parcel alert policy
+
+The selected alert threshold is **0.50**.
+
+On the final test set:
+
+- Precision was **0.6889**: about **6.9 of every 10 flagged parcels** were actually delayed.
+- Recall was **0.7561**: about **7.6 of every 10 delayed parcels** were detected.
+- There were **31 detected delays, 14 false alerts and 10 missed delays**.
+
+Source: `outputs/part_c_final_test.csv`.
+
+The threshold met the validation recall requirement but did not achieve 80% recall on the held-out test set. This limitation should be considered when planning operational reliance.
+
+### Actions for the 48 new parcels
+
+| Action | Parcels |
+|---|---:|
+| No action | 40 |
+| Proactive customer call | 2 |
+| Escalate to hub manager | 6 |
+| Total flagged | 8 |
+
+Source: `outputs/new_shipment_actions.csv`.
+
+Actions follow these rules:
+
+1. If a parcel is not flagged, assign `No action`.
+2. If it is flagged and its hub segment is Escalate, assign `Escalate to hub manager`.
+3. Otherwise, if it is flagged, assign `Proactive customer call`.
+
+These are recommendations in the CSV, not calls or escalations already executed.
+
+Actual outcomes for the new batch are unavailable, so its prediction accuracy cannot yet be measured.
+
+## Production plan
+
+### Readiness characteristics
+
+| Characteristic | Concrete repository evidence |
+|---|---|
+| Accuracy | Held-out regression and classification metrics in `part_b_metrics.csv` and `part_c_final_test.csv`. |
+| Reliability | Input/output assertions and reload verification in `package_model.py` and `predict_delay.py`. |
+| Reproducibility | Fixed random seeds, pinned dependencies, documented execution order and repeatability check. |
+| Maintainability | Shared functions and constants in `src/shipment_prep.py`. |
+| Consistency | Training preparation and new-shipment scoring reuse the same functions, historical medians and feature order. |
+| Monitorability | The action CSV records shipment ID, hub, segment, probability, flag and action. |
+
+These artifacts support production readiness but do not constitute a deployed monitoring service. Runtime performance and operational reliability still require measurement on representative live workloads.
+
+### Proposed monitoring triggers
+
+The following are starting policies, not measured production results. They should be reviewed after a representative pilot.
+
+| Quantity | Proposed numeric trigger | Response |
+|---|---|---|
+| Actual delayed share | More than 5 percentage points above the comparable historical baseline for two consecutive completed weekly cohorts. | Investigate hub, route and service-mix changes. |
+| Share of parcels flagged | More than 5 percentage points above or below the comparable pilot baseline for two consecutive weeks. | Check data quality, input drift and alert workload. |
+| Recall after outcomes become known | Below 0.70 over the latest 100 actually delayed parcels. | Review missed cases and evaluate a challenger model and threshold. |
+| Missing rate in a required numeric input | Above 5% in a scoring batch, measured before filling. | Investigate the upstream feed and imputation impact. |
+| Unknown hub IDs | Any unmatched hub ID in a batch. | Resolve reference-data coverage before issuing actions for affected rows. |
+
+The pilot baseline should be established on representative operational batches, rather than treating the small synthetic new-shipment batch as a permanent baseline.
+
+Outcome-based monitoring must wait for sufficiently mature delivery outcomes. Undelivered parcels should not automatically be treated as on time.
+
+### Retraining and drift
+
+I propose a monthly model review and retraining evaluation, with an earlier review if a monitoring trigger is breached.
+
+A candidate model should replace the existing model only after validation against the agreed metrics and operational alert workload. Retraining should not automatically imply deployment.
+
+For the 15–28 September sale window, monitor `sale_event_flag` and compare sale-event performance with comparable sale-event data, rather than ordinary weeks. If comparable event history is unavailable, record that limitation.
+
+Data drift could appear as changes in distance, route stops, service mix, hub capacity, rain frequency or missing-value rates. Changes in how those inputs relate to actual delays could also reduce model performance.
+
+Review hub profiles and segment assignments as operational conditions change.
+
+Any replacement classifier should be packaged with its matching threshold, feature order and imputation values.
 
 ## Limitations
 
 - The dataset is synthetic. Results do not establish performance on real Delhivery operations.
 - Validation and test sets contain only 180 shipments each, so rankings and error estimates may vary with the sample.
+- The classification test set contains only 41 delayed parcels. Recall is sensitive to a small number of additional missed cases.
+- The threshold was selected on one validation split. Test recall was 75.61%, below validation recall of 83.33%.
+- Model probability scores have not been independently calibrated as real-world probabilities.
 - Linear Regression and Gradient Boosting were close on validation, and their cross-validation ranking differed.
-- Correlations and grouped delay rates describe associations, not causal effects.
-- The regression model produces point estimates, not prediction intervals.
-- Classification test recall was 75.61%, below validation recall of 83.33%; the alert rule still misses some delayed parcels.
-- Following the prescribed tuning procedure, feature selection occurred before the inner cross-validation splits. Those CV scores therefore do not independently evaluate the feature-selection step. Validation and test rows were excluded from fitting the selector.
-- Hub segmentation, model packaging and final operational scoring are not yet completed.
+- The regression model produces point estimates, not prediction intervals or guaranteed delivery-time bounds.
+- Correlations, grouped delay rates and cluster membership describe associations, not causal effects.
+- Hub profiles use only 50 historical shipments per hub and may change with season, service mix or network conditions.
+- Following the brief, historical medians were computed before splitting. A stricter future evaluation would fit imputation within training data or each training fold.
+- Following the prescribed tuning procedure, feature selection occurred before internal cross-validation. Those CV scores do not independently evaluate feature selection; outer validation and test rows were excluded from fitting the selector.
+- New-shipment outcomes are unavailable, so the accuracy of the 48-parcel action list is unknown.
+- Monitoring triggers and operational playbooks are proposals. Their costs and benefits have not been measured in production.
